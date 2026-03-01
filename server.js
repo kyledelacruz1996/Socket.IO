@@ -1,200 +1,135 @@
-<template>
-  <v-container fluid>
-    <!-- Username -->
-    <v-row v-if="!username">
-      <v-col cols="12" md="6">
-        <v-card>
-          <v-card-title>Enter Username</v-card-title>
-          <v-card-text>
-            <v-text-field v-model="tempUsername" label="Username"></v-text-field>
-          </v-card-text>
-          <v-card-actions>
-            <v-btn color="primary" @click="setUsername">Join</v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-col>
-    </v-row>
+// server.js
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
+const os = require("os");
 
-    <!-- Video + Chat -->
-    <v-row v-else>
-      <!-- Video -->
-      <v-col cols="12" md="8">
-        <v-row>
-          <v-col cols="12" md="6">
-            <v-card>
-              <v-card-title>You ({{ username }})</v-card-title>
-              <video ref="localVideo" autoplay muted playsinline width="100%"></video>
-            </v-card>
-          </v-col>
+const app = express();
 
-          <v-col v-for="(stream, id) in remoteStreams" :key="id" cols="12" md="6">
-            <v-card>
-              <v-card-title>{{ usernames[id] || id }}</v-card-title>
-              <video :ref="el => setRemoteVideo(el, id)" autoplay playsinline width="100%"></video>
-            </v-card>
-          </v-col>
-        </v-row>
+// CORS
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      if (
+        origin === "http://localhost:3000" ||
+        origin.endsWith(".netlify.app")
+      )
+        return callback(null, true);
+      return callback(new Error("CORS not allowed for this origin"));
+    },
+    methods: ["GET", "POST"],
+  })
+);
 
-        <v-row class="mt-4">
-          <v-btn color="error" @click="endCall">End Call</v-btn>
-        </v-row>
-      </v-col>
+const server = http.createServer(app);
 
-      <!-- Chat -->
-      <v-col cols="12" md="4">
-        <v-card height="100%">
-          <v-card-title>Team Chat</v-card-title>
-          <v-card-text class="chat-box" style="height:400px;overflow-y:auto" ref="chatBox">
-            <div v-for="(msg, i) in messages" :key="i">
-              <strong v-if="msg.senderName !== 'System'">{{ msg.senderName }}:</strong>
-              <em v-else>{{ msg.text }}</em>
-              <span v-if="msg.senderName !== 'System'"> {{ msg.text }}</span>
-            </div>
-          </v-card-text>
-          <v-card-actions>
-            <v-text-field
-              v-model="chatInput"
-              label="Type a message"
-              dense
-              hide-details
-              @keyup.enter="sendMessage"
-            ></v-text-field>
-            <v-btn color="primary" @click="sendMessage">Send</v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-col>
-    </v-row>
-  </v-container>
-</template>
-
-<script setup>
-import { ref, reactive, nextTick } from "vue";
-import { io } from "socket.io-client";
-
-const SERVER_IP = "192.168.1.16"; // replace with your LAN IP
-const SERVER_PORT = 3001;
-const socket = io(`http://${SERVER_IP}:${SERVER_PORT}`);
-const roomId = "room1";
-
-const tempUsername = ref("");
-const username = ref("");
-
-const localVideo = ref(null);
-const remoteStreams = reactive({});
-const peers = {};
-const usernames = reactive({});
-let localStream;
-
-const messages = reactive([]);
-const chatInput = ref("");
-
-const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-
-// --- Username ---
-function setUsername() {
-  if (!tempUsername.value.trim()) return;
-  username.value = tempUsername.value.trim();
-  joinRoom();
-}
-
-// --- Join room ---
-async function joinRoom() {
-  if (!localStream) {
-    localStream = await navigator.mediaDevices.getUserMedia({ video:true,audio:true });
-    localVideo.value.srcObject = localStream;
+// Auto-detect LAN IP
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === "IPv4" && !iface.internal) return iface.address;
+    }
   }
-  socket.emit("join-room", { roomId, username: username.value });
+  return "0.0.0.0";
 }
 
-// --- Socket events ---
-socket.on("all-users", async (users) => {
-  for (const user of users) {
-    await createPeer(user.id, true);
-    usernames[user.id] = user.username;
-  }
+const HOST = getLocalIP();
+const PORT = process.env.PORT || 3001;
+
+// Store users and messages per room
+const roomsUsers = {};    // { roomId: { socketId: username } }
+const roomsMessages = {}; // { roomId: [ { senderName, text } ] }
+
+const io = new Server(server, {
+  cors: {
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      if (
+        origin === "http://localhost:3000" ||
+        origin.endsWith(".netlify.app")
+      )
+        return callback(null, true);
+      return callback(new Error("CORS not allowed for this origin"));
+    },
+    methods: ["GET", "POST"],
+  },
 });
 
-socket.on("user-joined", async (user) => {
-  await createPeer(user.id, false);
-  usernames[user.id] = user.username;
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  // --- Join room with username ---
+  socket.on("join-room", ({ roomId, username }) => {
+    socket.join(roomId);
+
+    if (!roomsUsers[roomId]) roomsUsers[roomId] = {};
+    roomsUsers[roomId][socket.id] = username;
+
+    // Send existing users to new user
+    const users = [];
+    for (const [id, name] of Object.entries(roomsUsers[roomId])) {
+      if (id !== socket.id) users.push({ id, username: name });
+    }
+    socket.emit("all-users", users);
+
+    // Notify others
+    socket.to(roomId).emit("user-joined", { id: socket.id, username });
+
+    // --- Announce join in chat ---
+    const joinMsg = { senderName: "System", text: `${username} joined the room` };
+    if (!roomsMessages[roomId]) roomsMessages[roomId] = [];
+    roomsMessages[roomId].push(joinMsg);
+    io.in(roomId).emit("chat-message", joinMsg);
+
+    // Send previous chat messages
+    if (roomsMessages[roomId]) {
+      roomsMessages[roomId].forEach((msg) => socket.emit("chat-message", msg));
+    }
+  });
+
+  // --- WebRTC signaling ---
+  socket.on("offer", ({ target, offer }) =>
+    io.to(target).emit("offer", { offer, sender: socket.id })
+  );
+  socket.on("answer", ({ target, answer }) =>
+    io.to(target).emit("answer", { answer, sender: socket.id })
+  );
+  socket.on("ice-candidate", ({ target, candidate }) =>
+    io.to(target).emit("ice-candidate", { candidate, sender: socket.id })
+  );
+
+  // --- Chat ---
+  socket.on("chat-message", ({ roomId, text, senderName }) => {
+    const msg = { senderName, text };
+    if (!roomsMessages[roomId]) roomsMessages[roomId] = [];
+    roomsMessages[roomId].push(msg);
+    io.in(roomId).emit("chat-message", msg);
+  });
+
+  // --- Disconnect ---
+  socket.on("disconnect", () => {
+    for (const [roomId, users] of Object.entries(roomsUsers)) {
+      if (users[socket.id]) {
+        const username = users[socket.id];
+        delete users[socket.id];
+
+        // Notify others in room
+        socket.to(roomId).emit("user-left", { id: socket.id, username });
+
+        // Announce in chat
+        const leaveMsg = { senderName: "System", text: `${username} left the room` };
+        if (!roomsMessages[roomId]) roomsMessages[roomId] = [];
+        roomsMessages[roomId].push(leaveMsg);
+        io.in(roomId).emit("chat-message", leaveMsg);
+      }
+    }
+    console.log("User disconnected:", socket.id);
+  });
 });
 
-socket.on("offer", async ({ offer, sender }) => {
-  if (!peers[sender]) await createPeer(sender, false);
-  await peers[sender].setRemoteDescription(offer);
-  const answer = await peers[sender].createAnswer();
-  await peers[sender].setLocalDescription(answer);
-  socket.emit("answer", { target: sender, answer });
+server.listen(PORT, HOST, () => {
+  console.log(`Server running at http://${HOST}:${PORT}`);
 });
-
-socket.on("answer", async ({ answer, sender }) => {
-  if (peers[sender]) await peers[sender].setRemoteDescription(answer);
-});
-
-socket.on("ice-candidate", async ({ candidate, sender }) => {
-  if (peers[sender]) await peers[sender].addIceCandidate(candidate);
-});
-
-socket.on("user-left", ({ id }) => {
-  peers[id]?.close();
-  delete peers[id];
-  delete remoteStreams[id];
-  delete usernames[id];
-});
-
-// Chat
-socket.on("chat-message", ({ senderName, text }) => {
-  messages.push({ senderName, text });
-  nextTick(() => scrollChatToBottom());
-});
-
-const chatBox = ref(null);
-function scrollChatToBottom() {
-  if (chatBox.value) chatBox.value.scrollTop = chatBox.value.scrollHeight;
-}
-
-// --- Create Peer ---
-async function createPeer(userId, initiator) {
-  if (peers[userId]) return;
-
-  const peer = new RTCPeerConnection(servers);
-  peers[userId] = peer;
-
-  localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
-
-  peer.ontrack = (event) => { remoteStreams[userId] = event.streams[0]; };
-
-  peer.onicecandidate = (event) => {
-    if (event.candidate) socket.emit("ice-candidate", { target:userId, candidate:event.candidate });
-  };
-
-  if (initiator) {
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    socket.emit("offer", { target:userId, offer });
-  }
-}
-
-// --- Set video ---
-function setRemoteVideo(el,id){ if(!el || !remoteStreams[id]) return; el.srcObject = remoteStreams[id]; }
-
-// --- Send Chat ---
-function sendMessage() {
-  if (!chatInput.value.trim()) return;
-  socket.emit("chat-message", { roomId, text: chatInput.value, senderName: username.value });
-  messages.push({ senderName:"You", text:chatInput.value });
-  chatInput.value = "";
-  nextTick(()=>scrollChatToBottom());
-}
-
-// --- End Call ---
-function endCall() {
-  Object.values(peers).forEach(peer => peer.close());
-  localStream?.getTracks().forEach(track => track.stop());
-  localStream = null;
-  for (const id in remoteStreams) delete remoteStreams[id];
-  Object.keys(peers).forEach(id => delete peers[id]);
-}
-
-socket.on("connect", ()=>console.log("Connected:",socket.id));
-</script>
