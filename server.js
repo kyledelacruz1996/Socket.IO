@@ -6,35 +6,37 @@ const cors = require("cors");
 
 const app = express();
 
-// --- CORS ---
-// Add your frontend URLs here
+// --- Allowed front-end URLs ---
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://cheery-jalebi-717ac4.netlify.app/",
-  "https://your-frontend.onrender.com",
+  "https://cheery-jalebi-717ac4.netlify.app",
+  "https://your-frontend.onrender.com", // replace with your actual front-end Render URL if any
 ];
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // allow Postman or server requests
-      if (allowedOrigins.includes(origin) || allowedOrigins.some(o => origin.endsWith(o))) {
-        return callback(null, true);
-      }
-      return callback(new Error("CORS not allowed for this origin"));
-    },
-    methods: ["GET", "POST"],
-  })
-);
+// --- CORS middleware ---
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // allow server-to-server or Postman requests
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("CORS not allowed for origin: " + origin));
+  },
+  methods: ["GET", "POST"]
+}));
+
+// Optional: log incoming requests for debugging
+app.use((req, res, next) => {
+  console.log("Incoming request origin:", req.headers.origin);
+  next();
+});
 
 const server = http.createServer(app);
 
-// --- Socket.IO ---
+// --- Socket.IO setup ---
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
-    methods: ["GET", "POST"],
-  },
+    methods: ["GET", "POST"]
+  }
 });
 
 // --- Store users and messages per room ---
@@ -52,23 +54,22 @@ io.on("connection", (socket) => {
     roomsUsers[roomId][socket.id] = username;
 
     // Send existing users to new user
-    const users = [];
-    for (const [id, name] of Object.entries(roomsUsers[roomId])) {
-      if (id !== socket.id) users.push({ id, username: name });
-    }
+    const users = Object.entries(roomsUsers[roomId])
+      .filter(([id]) => id !== socket.id)
+      .map(([id, name]) => ({ id, username: name }));
     socket.emit("all-users", users);
 
     // Notify others
     socket.to(roomId).emit("user-joined", { id: socket.id, username });
 
-    // --- Announce join in chat ---
+    // Announce join in chat
     const joinMsg = { senderName: "System", text: `${username} joined the room` };
     if (!roomsMessages[roomId]) roomsMessages[roomId] = [];
     roomsMessages[roomId].push(joinMsg);
     io.in(roomId).emit("chat-message", joinMsg);
 
-    // Send previous chat messages
-    roomsMessages[roomId].forEach((msg) => socket.emit("chat-message", msg));
+    // Send previous chat messages to new user
+    roomsMessages[roomId].forEach(msg => socket.emit("chat-message", msg));
   });
 
   // --- WebRTC signaling ---
@@ -82,7 +83,7 @@ io.on("connection", (socket) => {
     io.to(target).emit("ice-candidate", { candidate, sender: socket.id })
   );
 
-  // --- Chat ---
+  // --- Chat messages ---
   socket.on("chat-message", ({ roomId, text, senderName }) => {
     const msg = { senderName, text };
     if (!roomsMessages[roomId]) roomsMessages[roomId] = [];
@@ -97,7 +98,7 @@ io.on("connection", (socket) => {
         const username = users[socket.id];
         delete users[socket.id];
 
-        // Notify others in room
+        // Notify others
         socket.to(roomId).emit("user-left", { id: socket.id, username });
 
         // Announce in chat
@@ -111,10 +112,9 @@ io.on("connection", (socket) => {
   });
 });
 
-// --- Render-friendly Host & Port ---
+// --- Render-friendly host & port ---
 const PORT = process.env.PORT || 3001;
 const HOST = "0.0.0.0"; // required for cloud hosting
 server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
 });
-
