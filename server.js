@@ -3,28 +3,35 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
-const os = require("os");
 
 const app = express();
-app.use(cors());
+
+// CORS config: allow any Netlify site
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true); // allow non-browser requests
+    if (origin.endsWith(".netlify.app")) return callback(null, true);
+    return callback(new Error("CORS not allowed for this origin"));
+  },
+  methods: ["GET", "POST"]
+}));
 
 const server = http.createServer(app);
 
-// Get LAN IP automatically
-function getLocalIP() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === "IPv4" && !iface.internal) return iface.address;
-    }
+// Use dynamic port (Railway or fallback)
+const PORT = process.env.PORT || 3001;
+
+// Socket.IO setup
+const io = new Server(server, {
+  cors: {
+    origin: function(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (origin.endsWith(".netlify.app")) return callback(null, true);
+      return callback(new Error("CORS not allowed for this origin"));
+    },
+    methods: ["GET", "POST"]
   }
-  return "0.0.0.0";
-}
-
-const HOST = getLocalIP();
-const PORT = 3001;
-
-const io = new Server(server, { cors: { origin: "*" } });
+});
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
@@ -55,6 +62,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Server running at http://${HOST}:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
