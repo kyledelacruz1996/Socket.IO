@@ -10,7 +10,7 @@ const app = express();
 // Add your frontend URLs here
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://your-frontend.netlify.app",
+  "https://cheery-jalebi-717ac4.netlify.app/",
   "https://your-frontend.onrender.com",
 ];
 
@@ -117,3 +117,4 @@ const HOST = "0.0.0.0"; // required for cloud hosting
 server.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
 });
+
