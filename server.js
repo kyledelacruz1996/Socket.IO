@@ -6,11 +6,15 @@ const cors = require("cors");
 
 const app = express();
 
-// CORS config: allow any Netlify site
+// CORS config: allow localhost and all Netlify URLs
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin) return callback(null, true); // allow non-browser requests
-    if (origin.endsWith(".netlify.app")) return callback(null, true);
+    if (
+      origin === "http://localhost:3000" || // local dev frontend
+      origin.endsWith(".netlify.app")      // all Netlify sites
+    ) return callback(null, true);
+
     return callback(new Error("CORS not allowed for this origin"));
   },
   methods: ["GET", "POST"]
@@ -18,7 +22,7 @@ app.use(cors({
 
 const server = http.createServer(app);
 
-// Use dynamic port (Railway or fallback)
+// Dynamic port (Railway, local fallback)
 const PORT = process.env.PORT || 3001;
 
 // Socket.IO setup
@@ -26,7 +30,11 @@ const io = new Server(server, {
   cors: {
     origin: function(origin, callback) {
       if (!origin) return callback(null, true);
-      if (origin.endsWith(".netlify.app")) return callback(null, true);
+      if (
+        origin === "http://localhost:3000" ||
+        origin.endsWith(".netlify.app")
+      ) return callback(null, true);
+
       return callback(new Error("CORS not allowed for this origin"));
     },
     methods: ["GET", "POST"]
